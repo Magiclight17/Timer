@@ -21,3 +21,9 @@ That’s it. This is a static site, no server code required.
 - Install to your phone from the browser menu. On iOS, first open in Safari, tap **Share → Add to Home Screen**.
 - iOS will only play sound after a user gesture: tap **Start** once per session.
 - Keep the screen awake for reliable chimes (background tabs may be throttled by the OS).
+
+
+## Vibration-only mode
+- The timer now vibrates continuously at ring time until you press **Start** (restart), **Stop**, or **Reset**.
+- On **Android/Chrome**, `navigator.vibrate` is supported.
+- On **iOS/Safari**, web vibration is **not supported**; the app will not vibrate. Consider enabling a short sound fallback or using Web Push notifications (Android supports custom vibration on notifications).

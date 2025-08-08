@@ -68,9 +68,9 @@
 
     <div class="controls">
       <button class="btn btn-accent" id="startBtn">Start</button>
-      <button class="btn" id="pauseBtn" disabled>Pause</button>
+      <button class="btn" id="pauseBtn" disabled>Stop</button>
       <button class="btn" id="resetBtn">Reset</button>
-      <button class="btn" id="ringNowBtn" title="Jouer le son maintenant">🔔 Test</button>
+      <button class="btn" id="ringNowBtn" title="Tester la vibration">📳 Test</button>
     </div>
 
     <div class="status" id="status">En attente de démarrage…</div>
@@ -205,9 +205,29 @@ window.addEventListener('beforeinstallprompt', (e) => {
   const ringsBadge = document.getElementById('ringsBadge');
   const nextBadge = document.getElementById('nextBadge');
 
-  let ctx = null;              // AudioContext
+  let vibrationInterval = null;
+  const stateKey = 'minuteur_state_v1';
+  function saveState(extra={}){
+    try {
+      const payload = Object.assign({
+        intervalSec: Math.floor(intervalMs/1000),
+        running,
+        baseEpochMs: baseEpochMs,
+        ringCount,
+        lastScheduledIndex
+      }, extra);
+      localStorage.setItem(stateKey, JSON.stringify(payload));
+    } catch(e){}
+  }
+  function loadState(){
+    try {
+      const s = JSON.parse(localStorage.getItem(stateKey) || 'null');
+      return s;
+    } catch(e){ return null; }
+  }
   let running = false;
   let baseMs = 0;              // start time (ms, performance.now)
+  let baseEpochMs = 0;        // start time (Date.now) for persistence
   let intervalMs = 68000;      // default 68s
   let tickRaf = 0;
   let ringCount = 0;
@@ -220,28 +240,22 @@ window.addEventListener('beforeinstallprompt', (e) => {
     return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   }
 
+  
+  function stopVibration(){
+    if (vibrationInterval) {
+      clearInterval(vibrationInterval);
+      vibrationInterval = null;
+    }
+    if (navigator.vibrate) navigator.vibrate(0);
+  }
+
   function updateIntervalFromInput() {
     const sec = Math.max(1, Math.floor(Number(secondsInput.value) || 68));
     secondsInput.value = sec;
     intervalMs = sec * 1000;
   }
 
-  function ringBeep(durationMs = 500) {
-    if (!ctx) return;
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.value = 880; // A5
-    o.connect(g);
-    g.connect(ctx.destination);
-    // fade out to avoid click
-    g.gain.setValueAtTime(0.001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durationMs/1000);
-    o.start();
-    o.stop(ctx.currentTime + durationMs/1000);
-    // also vibrate if supported
-    if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+  function ringBeep(){ startBuzz(); }
   }
 
   function scheduleLoop() {
@@ -256,7 +270,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     // fire missed rings reliably (if tab was sleeping)
     if (idx > lastScheduledIndex) {
       for (let k = lastScheduledIndex + 1; k <= idx; k++) {
-        ringBeep(450);
+        startBuzz();
         ringCount++;
       }
       lastScheduledIndex = idx;
@@ -268,16 +282,18 @@ window.addEventListener('beforeinstallprompt', (e) => {
     nextBadge.textContent = 'Prochain: ' + fmt(msToNext);
 
     tickRaf = requestAnimationFrame(scheduleLoop);
+    // persist light state every frame (cheap) but throttle could be added
+    saveState();
   }
 
   function startTimer() {
+    stopBuzz();
+    stopVibration();
     updateIntervalFromInput();
 
-    // iOS requires a user gesture to resume / create AudioContext
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
-
+            
     baseMs = performance.now();
+    baseEpochMs = Date.now();
     lastScheduledIndex = -1;
     ringCount = 0;
     ringsBadge.textContent = `0 son(s)`;
@@ -285,18 +301,24 @@ window.addEventListener('beforeinstallprompt', (e) => {
     startBtn.disabled = true;
     pauseBtn.disabled = false;
     statusEl.textContent = 'Démarré…';
+    saveState();
     scheduleLoop();
   }
 
   function pauseTimer() {
+    stopBuzz();
+    stopVibration();
     running = false;
     cancelAnimationFrame(tickRaf);
     startBtn.disabled = false;
     pauseBtn.disabled = true;
     statusEl.textContent = 'En pause';
+    saveState({running:false});
   }
 
   function resetTimer() {
+    stopBuzz();
+    stopVibration();
     running = false;
     cancelAnimationFrame(tickRaf);
     updateIntervalFromInput();
@@ -307,29 +329,50 @@ window.addEventListener('beforeinstallprompt', (e) => {
     ringsBadge.textContent = `0 son(s)`;
     startBtn.disabled = false;
     pauseBtn.disabled = true;
+    saveState({running:false});
   }
 
   // Init display
   display.textContent = fmt(intervalMs);
+
+  // Auto-resume if previously running
+  const prev = loadState();
+  if (prev) {
+    if (prev.buzzing) { startBuzz(); }
+    secondsInput.value = prev.intervalSec || 68;
+    updateIntervalFromInput();
+    ringsBadge.textContent = `${prev.ringCount||0} son(s)`;
+    if (prev.running && prev.baseEpochMs) {
+      // reconstruct baseMs from wall clock
+      const elapsed = Math.max(0, Date.now() - prev.baseEpochMs);
+      baseMs = performance.now() - elapsed;
+      baseEpochMs = prev.baseEpochMs;
+      running = true;
+      startBtn.disabled = true;
+      pauseBtn.disabled = false;
+      lastScheduledIndex = prev.lastScheduledIndex ?? -1;
+      statusEl.textContent = 'Repris automatiquement…';
+      scheduleLoop();
+    } else {
+      display.textContent = fmt(intervalMs);
+    }
+  }
+
 
   // Events
   startBtn.addEventListener('click', startTimer);
   pauseBtn.addEventListener('click', pauseTimer);
   resetBtn.addEventListener('click', resetTimer);
   ringNowBtn.addEventListener('click', () => {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
-    ringBeep(450);
+            startBuzz();
   });
   secondsInput.addEventListener('change', () => {
     updateIntervalFromInput();
     if (!running) display.textContent = fmt(intervalMs);
+    saveState({intervalSec: Math.floor(intervalMs/1000)});
   });
 
-  document.addEventListener('visibilitychange', () => {
-    if (ctx && ctx.state === 'suspended' && running) ctx.resume();
-  });
-
+  
 })();
 </script>
 </body>
