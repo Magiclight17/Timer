@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>To-Do + Minuteur (1:08)</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#0f1115">
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --text:#e8ecf1; --muted:#9aa4b2; --accent:#6ee7b7; --danger:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 12px; color: var(--accent); }
+  .card { background: var(--card); border: 1px solid #222834; border-radius: 12px; padding: 14px; box-shadow: 0 6px 20px rgb(0 0 0 / 25%); }
+  /* To-do */
+  .todo-header { display:flex; gap:8px; }
+  .todo-header input[type="text"] { flex:1; padding:12px 14px; border-radius:10px; border:1px solid #283042; background:#0e121a; color:var(--text); }
+  .btn { padding:12px 14px; border-radius:10px; border:1px solid #283042; background:#0e121a; color:var(--text); cursor:pointer; }
+  .btn:hover { border-color:#3a465f; }
+  .btn-accent { background: #0f1b16; border-color:#1f2f29; color: var(--accent); }
+  .btn-danger { background:#1d1313; border-color:#352324; color: var(--danger); }
+  ul { list-style:none; padding:0; margin:12px 0 0; }
+  li { display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid #242a38; }
+  li:last-child { border-bottom:none; }
+  .todo-text { flex:1; word-break: break-word; }
+  .todo-text.done { text-decoration: line-through; color: var(--muted); }
+  .tiny { font-size:12px; color: var(--muted); }
+  /* Timer */
+  .timer { text-align:center; margin-top:18px; }
+  .time { font-variant-numeric: tabular-nums; font-size: clamp(44px, 12vw, 88px); letter-spacing: 2px; margin: 10px 0; }
+  .controls { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  .row { display:flex; gap:8px; align-items:center; justify-content:center; margin:10px 0 0; }
+  input[type="number"] { width: 6.5rem; padding:10px; border-radius:10px; border:1px solid #283042; background:#0e121a; color:var(--text); }
+  .status { margin-top:8px; text-align:center; color: var(--muted); }
+  .badge { display:inline-block; border:1px solid #2b3346; border-radius:999px; padding:6px 10px; margin: 6px 4px 0; font-size:12px; }
+  .install { margin-top:10px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>To-Do + Minuteur ⏱️ (son toutes les 1:08)</h1>
+
+  <!-- To-Do Card -->
+  <div class="card" id="todoCard">
+    <div class="todo-header">
+      <input id="todoInput" type="text" placeholder="Ajouter une tâche et Entrée…" />
+      <button class="btn btn-accent" id="addBtn">Ajouter</button>
+    </div>
+    <ul id="todoList"></ul>
+    <div class="row">
+      <button class="btn" id="clearDoneBtn">Effacer tâches faites</button>
+      <button class="btn btn-danger" id="clearAllBtn">Tout effacer</button>
+      <span class="tiny" id="counts"></span>
+    </div>
+  </div>
+
+  <!-- Timer Card -->
+  <div class="card timer" id="timerCard">
+    <div class="row" title="Par défaut: 1 min 08 s">
+      <label class="tiny">Intervalle (secondes):</label>
+      <input id="secondsInput" type="number" min="1" value="68" />
+      <span class="tiny">(68 = 1:08)</span>
+    </div>
+
+    <div class="time" id="display">01:08</div>
+
+    <div class="controls">
+      <button class="btn btn-accent" id="startBtn">Start</button>
+      <button class="btn" id="pauseBtn" disabled>Pause</button>
+      <button class="btn" id="resetBtn">Reset</button>
+      <button class="btn" id="ringNowBtn" title="Jouer le son maintenant">🔔 Test</button>
+    </div>
+
+    <div class="status" id="status">En attente de démarrage…</div>
+    <div class="status">
+      <span class="badge" id="ringsBadge">0 son(s)</span>
+      <span class="badge" id="nextBadge">Prochain: —</span>
+    </div>
+    <div class="tiny" style="margin-top:8px">
+      Astuce iPhone: laissez l’écran allumé (ou ajoutez l’app à l’écran d’accueil). Les navigateurs peuvent suspendre les minuteurs quand l’app est en arrière-plan.
+    </div>
+    <div class="install">
+      <button class="btn" id="installBtn" hidden>Installer l’app</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Register service worker for offline usage
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(console.error);
+}
+
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const btn = document.getElementById('installBtn');
+  btn.hidden = false;
+  btn.onclick = async () => {
+    btn.hidden = true;
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+    }
+  };
+});
+
+(() => {
+  /* === To-Do logic with localStorage === */
+  const storeKey = 'minuteur_todos_v1';
+  const listEl = document.getElementById('todoList');
+  const inputEl = document.getElementById('todoInput');
+  const addBtn = document.getElementById('addBtn');
+  const clearDoneBtn = document.getElementById('clearDoneBtn');
+  const clearAllBtn = document.getElementById('clearAllBtn');
+  const countsEl = document.getElementById('counts');
+
+  let todos = JSON.parse(localStorage.getItem(storeKey) || '[]');
+
+  function saveTodos() {
+    localStorage.setItem(storeKey, JSON.stringify(todos));
+    renderTodos();
+  }
+
+  function renderTodos() {
+    listEl.innerHTML = '';
+    let done = 0;
+    todos.forEach((t, i) => {
+      if (t.done) done++;
+      const li = document.createElement('li');
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = t.done;
+      cb.addEventListener('change', () => {
+        todos[i].done = cb.checked;
+        saveTodos();
+      });
+
+      const txt = document.createElement('div');
+      txt.className = 'todo-text' + (t.done ? ' done' : '');
+      txt.textContent = t.text;
+      txt.contentEditable = "true";
+      txt.spellcheck = false;
+      txt.addEventListener('blur', () => {
+        const val = txt.textContent.trim();
+        if (val.length === 0) {
+          todos.splice(i,1);
+        } else {
+          todos[i].text = val;
+        }
+        saveTodos();
+      });
+
+      const del = document.createElement('button');
+      del.className = 'btn btn-danger';
+      del.textContent = 'Suppr';
+      del.addEventListener('click', () => {
+        todos.splice(i,1);
+        saveTodos();
+      });
+
+      li.append(cb, txt, del);
+      listEl.appendChild(li);
+    });
+    countsEl.textContent = `${todos.length} total · ${done} fait(s) · ${todos.length - done} restant(s)`;
+  }
+
+  function addTodo() {
+    const v = inputEl.value.trim();
+    if (!v) return;
+    todos.push({ text: v, done: false });
+    inputEl.value = '';
+    saveTodos();
+  }
+
+  addBtn.addEventListener('click', addTodo);
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addTodo(); }
+  });
+  clearDoneBtn.addEventListener('click', () => {
+    todos = todos.filter(t => !t.done);
+    saveTodos();
+  });
+  clearAllBtn.addEventListener('click', () => {
+    if (confirm('Tout effacer ?')) {
+      todos = [];
+      saveTodos();
+    }
+  });
+  renderTodos();
+
+  /* === Minuteur logic (1:08 default) === */
+  const secondsInput = document.getElementById('secondsInput');
+  const display = document.getElementById('display');
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const ringNowBtn = document.getElementById('ringNowBtn');
+  const statusEl = document.getElementById('status');
+  const ringsBadge = document.getElementById('ringsBadge');
+  const nextBadge = document.getElementById('nextBadge');
+
+  let ctx = null;              // AudioContext
+  let running = false;
+  let baseMs = 0;              // start time (ms, performance.now)
+  let intervalMs = 68000;      // default 68s
+  let tickRaf = 0;
+  let ringCount = 0;
+  let lastScheduledIndex = -1; // which ring we’ve already fired
+
+  function fmt(ms) {
+    let s = Math.max(0, Math.round(ms/1000));
+    const m = Math.floor(s/60);
+    s = s % 60;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function updateIntervalFromInput() {
+    const sec = Math.max(1, Math.floor(Number(secondsInput.value) || 68));
+    secondsInput.value = sec;
+    intervalMs = sec * 1000;
+  }
+
+  function ringBeep(durationMs = 500) {
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.value = 880; // A5
+    o.connect(g);
+    g.connect(ctx.destination);
+    // fade out to avoid click
+    g.gain.setValueAtTime(0.001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durationMs/1000);
+    o.start();
+    o.stop(ctx.currentTime + durationMs/1000);
+    // also vibrate if supported
+    if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+  }
+
+  function scheduleLoop() {
+    if (!running) return;
+    const now = performance.now();
+    const elapsed = now - baseMs;
+    const idx = Math.floor(elapsed / intervalMs); // how many full intervals have passed
+    const nextIdx = idx + 1;
+    const nextAt = baseMs + nextIdx * intervalMs;
+    const msToNext = nextAt - now;
+
+    // fire missed rings reliably (if tab was sleeping)
+    if (idx > lastScheduledIndex) {
+      for (let k = lastScheduledIndex + 1; k <= idx; k++) {
+        ringBeep(450);
+        ringCount++;
+      }
+      lastScheduledIndex = idx;
+      ringsBadge.textContent = `${ringCount} son(s)`;
+      statusEl.textContent = '🔔 Son !';
+    }
+
+    display.textContent = fmt(msToNext);
+    nextBadge.textContent = 'Prochain: ' + fmt(msToNext);
+
+    tickRaf = requestAnimationFrame(scheduleLoop);
+  }
+
+  function startTimer() {
+    updateIntervalFromInput();
+
+    // iOS requires a user gesture to resume / create AudioContext
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+
+    baseMs = performance.now();
+    lastScheduledIndex = -1;
+    ringCount = 0;
+    ringsBadge.textContent = `0 son(s)`;
+    running = true;
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    statusEl.textContent = 'Démarré…';
+    scheduleLoop();
+  }
+
+  function pauseTimer() {
+    running = false;
+    cancelAnimationFrame(tickRaf);
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    statusEl.textContent = 'En pause';
+  }
+
+  function resetTimer() {
+    running = false;
+    cancelAnimationFrame(tickRaf);
+    updateIntervalFromInput();
+    display.textContent = fmt(intervalMs);
+    nextBadge.textContent = 'Prochain: —';
+    statusEl.textContent = 'Réinitialisé';
+    ringCount = 0;
+    ringsBadge.textContent = `0 son(s)`;
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+  }
+
+  // Init display
+  display.textContent = fmt(intervalMs);
+
+  // Events
+  startBtn.addEventListener('click', startTimer);
+  pauseBtn.addEventListener('click', pauseTimer);
+  resetBtn.addEventListener('click', resetTimer);
+  ringNowBtn.addEventListener('click', () => {
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    ringBeep(450);
+  });
+  secondsInput.addEventListener('change', () => {
+    updateIntervalFromInput();
+    if (!running) display.textContent = fmt(intervalMs);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (ctx && ctx.state === 'suspended' && running) ctx.resume();
+  });
+
+})();
+</script>
+</body>
+</html>
